@@ -8,7 +8,7 @@ from . import precision_control
 __all__ = ['objfunc_wrapper', 'array2list', 'list2array']
 #%%
 def array2list(x, variables_size, variables_shape, iscopy=True):
-    N = sum(variables_size)
+    N = int(sum(variables_size))
     n = len(variables_size)
     x = reshape(x, (N,))
     x = (x.copy() if iscopy else x)
@@ -45,7 +45,7 @@ def tfloss_meta(loss):
         variables_size.append((1 if len(s) == 0 else reduce(multiply, s)))
         variables_shape.append(s)
     variables_num = len(variables)
-    allsize = sum(variables_size)
+    allsize = int(sum(variables_size))
     with tf.name_scope('array2tensors/'+loss.name.split(':')[0]):
         array2tensors_placeholder = []
         array2tensors_assignop = []
@@ -106,7 +106,7 @@ class objfunc_wrapper_class(object):
     """
     def __init__(self, father_wrapper, registered_vars, xopt_list=None):
         assert isinstance(registered_vars, list)
-        assert len(registered_vars) > 0
+        # assert len(registered_vars) > 0
         registered_vars_indx = []
         for v in registered_vars:
             assert v in father_wrapper.variables
@@ -129,7 +129,7 @@ class objfunc_wrapper_class(object):
             self.xopt_list.append(father_wrapper.xopt_list[i].copy())
         self.xopt_list = (xopt_list if not xopt_list is None else self.xopt_list)
         self.xopt_dict = dict(zip(self.variables, self.xopt_list))
-        self.allsize = sum(self.variables_size)
+        self.allsize = int(sum(self.variables_size))
         self.variables_num = len(registered_vars)
     def update(self, feed_dict=None, sess=None):
         """
@@ -148,6 +148,11 @@ class objfunc_wrapper_class(object):
         sess = (tf.get_default_session() if sess is None else sess)
         sess.run(assignop, feed_dict=assignop_feed_dict)
         return None
+    def get_xopt(self):
+        xopt_dict = {}
+        for v in self.variables:
+            xopt_dict[v] = v.eval()
+        return xopt_dict
     def set_xopt(self, xopt, iscopy=True):
         """
         利用xopt更新self.xopt_list

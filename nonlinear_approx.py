@@ -11,8 +11,8 @@ __all__ = ['LagrangeInterp', 'LagrangeInterp_Fitter',
         'NN_Fitter', 'KNN_Fitter']
 
 #%%
-def preprocess_for_fitter(fitter):
-    def F(inputs):
+def preprocess_for_fitter(fitter,variables):
+    def F(inputs, **kw):
         """
         Args: inputs
             inputs 是一个 N1 x N2 x ... Nt x m 的 tensor.
@@ -37,7 +37,7 @@ def preprocess_for_fitter(fitter):
             s.append(j)
         if len(s) > 2:
             inputs = tf.reshape(inputs, [-1,s[-1]])
-        infe_tmp = fitter(inputs)
+        infe_tmp = fitter(inputs, **kw)
         infe = []
         if len(s) > 2:
             if not isinstance(infe_tmp, list):
@@ -55,6 +55,7 @@ def preprocess_for_fitter(fitter):
             infe = infe_tmp
         return infe
     F.__doc__ = F.__doc__ + 'docstring for fitter:\n' + fitter.__doc__
+    F.variables = variables
     return F
 
 #%%
@@ -132,7 +133,7 @@ def LagrangeInterp(inputs, interp_coe, nonlinear_rank, interp_order, mesh_bound,
     ##base = tf.concat(base_tmp, axis=1)
     ##inference = tf.reduce_sum(interp_coe_resp*base, axis=list(range(1,nonlinear_rank+1)))
     ##return inference
-def LagrangeInterp_Fitter(interp_coe, interp_order, mesh_bound, mesh_size, mesh_delta, collections=None):
+def LagrangeInterp_Fitter(interp_coe, interp_order, mesh_bound, mesh_size, collections=None):
     """
     Lagrange interpolation in R^m
     Args: 
@@ -144,13 +145,16 @@ def LagrangeInterp_Fitter(interp_coe, interp_order, mesh_bound, mesh_size, mesh_
     Return:
         A LagrangeInterp fitter
     """
+    mesh_bound = array(mesh_bound)
+    mesh_size = array(mesh_size)
+    mesh_delta = (mesh_bound[1]-mesh_bound[0])/mesh_size
     TENSOR_DTYPE = precision_control.TENSOR_PRECISION()
     nonlinear_rank = mesh_size.shape[0]
     if isinstance(interp_coe, ndarray):
         interp_coe = tf.Variable(interp_coe, dtype=TENSOR_DTYPE, name='interp_coe', collections=collections)
     fitter = lambda inputs: LagrangeInterp(inputs, interp_coe, nonlinear_rank, interp_order, mesh_bound, mesh_size, mesh_delta)
     fitter.__doc__ = 'Lagrange Interpolation'
-    return preprocess_for_fitter(fitter)
+    return preprocess_for_fitter(fitter, interp_coe)
 
 #%%
 def Kernel_Fitter(kernel_type_func, w, Train_Point, trainable=False, collections=None, **kw):
@@ -167,7 +171,10 @@ def Kernel_Fitter(kernel_type_func, w, Train_Point, trainable=False, collections
     w = tf.reshape(w, [-1, s0[-1].value])
     fitter = lambda inputs: kernel_type_func(inputs, w, Train_Point, **kw)
     fitter.__doc__ = kernel_type_func.__doc__
-    return preprocess_for_fitter(fitter)
+    variables = kw
+    variables['w'] = w
+    variables['Train_Point'] = Train_Point
+    return preprocess_for_fitter(fitter, variables)
 def SVR_RBF(inputs, w, Train_Point, *, b=0, gamma=1, **kw):
     """
     SVR approximation via RBF kernel
@@ -217,31 +224,34 @@ def KNN_Fitter(w, Train_Point, approx_order=0, trainable=False, collections=None
     """
     return Kernel_Fitter(KNN, w, Train_Point, trainable=trainable, collections=collections, approx_order=approx_order)
 #%%
-def batch_norm_wrapper(train_inputs, test_inputs=None, epsilon=1e-4, decay=0.95, collections=None):
+def batch_norm_wrapper(nonlinear_rank, collections=None):
     TENSOR_DTYPE = precision_control.TENSOR_PRECISION()
-    scale = tf.Variable(tf.ones([train_inputs.get_shape()[-1]], dtype=TENSOR_DTYPE), 
+    scale = tf.Variable(tf.ones([nonlinear_rank], dtype=TENSOR_DTYPE), 
             name='BN_scale', trainable=False, dtype=TENSOR_DTYPE, collections=collections)
-    beta = tf.Variable(tf.zeros([train_inputs.get_shape()[-1]], dtype=TENSOR_DTYPE), 
+    beta = tf.Variable(tf.zeros([nonlinear_rank], dtype=TENSOR_DTYPE), 
             name='BN_beta', trainable=False, dtype=TENSOR_DTYPE, collections=collections)
-    pop_mean = tf.Variable(tf.zeros([train_inputs.get_shape()[-1]], dtype=TENSOR_DTYPE), 
-            name='pop_mean', trainable=True, dtype=TENSOR_DTYPE, collections=collections)
-    pop_var = tf.Variable(tf.ones([train_inputs.get_shape()[-1]], dtype=TENSOR_DTYPE), 
-            name='pop_var', trainable=True, dtype=TENSOR_DTYPE, collections=collections)
+    pop_mean = tf.Variable(tf.zeros([nonlinear_rank], dtype=TENSOR_DTYPE), 
+            name='pop_mean', trainable=False, dtype=TENSOR_DTYPE, collections=collections)
+    pop_var = tf.Variable(tf.ones([nonlinear_rank], dtype=TENSOR_DTYPE), 
+            name='pop_var', trainable=False, dtype=TENSOR_DTYPE, collections=collections)
+    def batch_norm(train_inputs, test_inputs=None, epsilon=1e-4, decay=0.95):
+        assert train_inputs.get_shape()[-1].value == nonlinear_rank
+        batch_mean, batch_var = tf.nn.moments(train_inputs,[0])
+        train_mean = tf.assign(pop_mean,
+                               pop_mean * decay + batch_mean * (1 - decay))
+        train_var = tf.assign(pop_var,
+                              pop_var * decay + batch_var * (1 - decay))
+        with tf.control_dependencies([train_mean, train_var]):
+            train_outputs = tf.nn.batch_normalization(train_inputs,
+                batch_mean, batch_var, beta, scale, epsilon)
 
-    batch_mean, batch_var = tf.nn.moments(train_inputs,[0])
-    train_mean = tf.assign(pop_mean,
-                           pop_mean * decay + batch_mean * (1 - decay))
-    train_var = tf.assign(pop_var,
-                          pop_var * decay + batch_var * (1 - decay))
-    with tf.control_dependencies([train_mean, train_var]):
-        train_outputs = tf.nn.batch_normalization(train_inputs,
-            batch_mean, batch_var, beta, scale, epsilon)
-
-    test_inputs = (train_inputs if test_inputs is None else test_inputs)
-    test_outputs = tf.nn.batch_normalization(test_inputs,
-        pop_mean, pop_var, beta, scale, epsilon)
-    return train_outputs, test_outputs
-def NN_Fitter(nonlinear_rank, widths, activation_func=tf.nn.relu, with_bn=True, collections=None):
+        test_inputs = (train_inputs if test_inputs is None else test_inputs)
+        test_outputs = tf.nn.batch_normalization(test_inputs,
+            pop_mean, pop_var, beta, scale, epsilon)
+        return train_outputs, test_outputs
+    return batch_norm
+def NN_Fitter(nonlinear_rank, widths, activation_func=tf.nn.relu, with_bn=True, collections=None, 
+        providebn=None, isoutputbn=False):
     """
     Return an full connected neural network fitter in R^nonlinear_rank
     Args:
@@ -254,6 +264,11 @@ def NN_Fitter(nonlinear_rank, widths, activation_func=tf.nn.relu, with_bn=True, 
     widths = [nonlinear_rank,]+widths
     w = []
     b = []
+    isprovidebn = (False if providebn is None else True)
+    bn = ([] if providebn is None else providebn)
+    if with_bn and not isprovidebn:
+        bn_wrapper = batch_norm_wrapper(widths[i], collections=collections)
+        bn.append(bn_wrapper)
     for i in range(len(widths)-1):
         w_init = tf.truncated_normal(shape=widths[i:i+2], mean=0, stddev=1/widths[i], dtype=TENSOR_DTYPE)
         w.append(
@@ -264,19 +279,28 @@ def NN_Fitter(nonlinear_rank, widths, activation_func=tf.nn.relu, with_bn=True, 
             b.append(
                     tf.Variable(b_init, dtype=TENSOR_DTYPE, collections=collections)
                     )
+        elif not isprovidebn:
+            bn_wrapper = batch_norm_wrapper(widths[i+1], collections=collections)
+            bn.append(bn_wrapper)
     scale = tf.Variable(random.rand(1,widths[-1]), name='scale', dtype=TENSOR_DTYPE, collections=collections)
     bias = tf.Variable(random.rand(1,widths[-1]), name='bias', dtype=TENSOR_DTYPE, collections=collections)
-    def fitter(inputs):
+    variables = {}
+    variables['w'] = w
+    variables['scale'] = scale
+    variables['bias'] = bias
+    if not with_bn:
+        variables['b'] = b
+    def fitter(inputs, epsilon=1e-4, decay=0.95):
         """
         a NN fitter
         """
         if with_bn:
-            train_outputs,test_outputs = batch_norm_wrapper(inputs, collections=collections)
+            train_outputs,test_outputs = bn[0](inputs)
         else:
             outputs = inputs
         for i in range(len(widths)-1):
             if with_bn:
-                train_outputs, test_outputs = batch_norm_wrapper(train_outputs @ w[i], test_outputs @ w[i], collections=collections)
+                train_outputs, test_outputs = bn[i+1](train_outputs @ w[i], test_outputs @ w[i], collections=collections)
                 train_outputs = activation_func(train_outputs)
                 test_outputs = activation_func(test_outputs)
             else:
@@ -288,8 +312,11 @@ def NN_Fitter(nonlinear_rank, widths, activation_func=tf.nn.relu, with_bn=True, 
             return [train_infe, test_infe]
         else:
             infe = tf.reshape(scale*outputs+bias, output_shape)
-            return infe
-    return preprocess_for_fitter(fitter)
+            return infe 
+        if isoutputbn:
+            return preprocess_for_fitter(fitter, variables), bn
+        else:
+            return preprocess_for_fitter(fitter, variables)
 
 #%%
 
