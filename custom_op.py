@@ -13,6 +13,22 @@ def py_func(func, inp, name=None, grad=None): # make out what this function do, 
     g = tf.get_default_graph()
     with g.gradient_override_map({"PyFunc": rnd_name}):
         return tf.py_func(func, inp, precision_control.TENSOR_PRECISION(), stateful=True, name=name)
+#%% pad
+def user_pad(tensor, paddings, mode='CONSTANT', name=None):
+    if mode in ['CONSTANT', 'SYMMETRIC', 'REFLECT']:
+        return tf.pad(tensor, paddings=paddings, mode=mode, name=name)
+    else:
+        assert mode == 'WRAP'
+        i = 0
+        indx = []
+        for a,b in paddings:
+            slice0 = slice(-a,None)
+            slice1 = slice(0,b)
+            if a+b > 0:
+                tensor = tf.concat([tensor[indx+[slice0,]],tensor,tensor[indx+[slice1,]]], axis=i)
+            indx = indx+[slice(None),]
+            i += 1
+        return (tensor if name is None else tf.identity(tensor, name=name))
 #%%
 #conv2d
 def user_ndarray_corr2d(x, f, mode='full'):
@@ -81,7 +97,7 @@ def custom_corr2d_valid_grad(op, grad):
 def tfconv2d(x, f, name=None, boundary=None, userdef_tfconv2d=None, **kw):
     """
     if boundary is None, then no padding for conv2d, 
-    else boudary \in {['symmetric', 'constant', 'reflect'] and their upper}
+    else boudary \in {['symmetric', 'constant', 'reflect', 'wrap'] and their upper}
     Usage:
         dtype = tf.float32
         x = tf.Variable(random.randn(10,100,100,2), dtype=dtype)
@@ -96,7 +112,7 @@ def tfconv2d(x, f, name=None, boundary=None, userdef_tfconv2d=None, **kw):
         pad_bottom = f.shape[0].value-1-pad_top
         pad_left = (f.shape[1].value-1)//2
         pad_right = f.shape[1].value-1-pad_left
-        x = tf.pad(x, paddings=[[0,0], [pad_top,pad_bottom], [pad_left,pad_right], [0,0]], mode=boundary.upper())
+        x = user_pad(x, paddings=[[0,0], [pad_top,pad_bottom], [pad_left,pad_right], [0,0]], mode=boundary.upper())
     shape = [1,]*4
     shape[0] = (-1 if x.shape[0].value is None else x.shape[0].value)
     shape[1] = x.shape[1].value-f.shape[0].value+1

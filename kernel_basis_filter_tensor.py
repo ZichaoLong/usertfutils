@@ -7,7 +7,8 @@ import numpy as np
 from improc_tools.kernel_basis_filter import diff_monomial_coe,diff_op_default_coe
 from . import precision_control
 from . import custom_op
-__all__ = ['diff_monomial_coe_tensor', 'wrap_filter2d_tensor', 'diff_op_default_coe_tensor', 'diff_op_default_filter_tensor']
+__all__ = ['wrap_filter2d_tensor', ]
+#__all__ = ['diff_monomial_coe_tensor', 'wrap_filter2d_tensor', 'diff_op_default_coe_tensor', 'diff_op_default_filter_tensor']
 #%%
 def diff_monomial_coe_tensor(shape=None, name=None, trainable=True, x_order=0, y_order=0, x_vers=None, y_vers=None):
     """

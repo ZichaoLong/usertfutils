@@ -229,6 +229,7 @@ def objfunc_wrapper(father_wrapper, registered_vars=None, xopt_list=None):
     if registered_vars is None:
         registered_vars = father_wrapper.variables
     return objfunc_wrapper_class(father_wrapper, registered_vars, xopt_list)
+objfunc_wrapper.__doc__ = objfunc_wrapper_class.__doc__
 #%%
 
 def test():
