@@ -123,24 +123,45 @@ def LagrangeInterp_Fitter(interp_coe, interp_order, mesh_bound, mesh_size, mesh_
     return preprocess_for_fitter(fitter)
 
 #%%
-def SVR_RBF(inputs, w, b, Train_Point, gamma):
+def SVR_RBF(inputs, w, Train_Point, *, b=0, gamma=1, **kw):
     logK = tf.reduce_sum(tf.square(Train_Point[:,tf.newaxis,:]-inputs[tf.newaxis,:,:]), axis=2)
     K = tf.exp(-gamma*logK)
     inference = (w @ K + b)[0,:]
     return inference
-def SVR_RBF_Fitter(w, b, Train_Point, gamma, trainable=False, collections=None):
+SVR_Compactsupport = SVR_RBF
+def Kernel_Fitter(kernel_type_func, w, Train_Point, trainable=False, collections=None, **kw):
     TENSOR_DTYPE = precision_control.TENSOR_PRECISION()
     if isinstance(Train_Point, ndarray):
         Train_Point = tf.Variable(Train_Point, dtype=TENSOR_DTYPE, trainable=trainable, collections=collections)
     s = w.get_shape()
-    for i in range(len(s)):
-        assert s[i].value == Train_Point.get_shape()[i].value
+    #for i in range(len(s)):
+    #    assert s[i].value == Train_Point.get_shape()[i].value
     Train_Point = tf.reshape(Train_Point, [-1, Train_Point.get_shape()[-1].value])
     w = tf.reshape(w, [1, -1])
-    b = tf.reshape(b, [])
-    fitter = lambda inputs: SVR_RBF(inputs, w, b, Train_Point, gamma)
+    b = (tf.reshape(kw['b'], []) if 'b' in kw else None)
+    gamma = (kw['gamma'] if 'gamma' in kw else None)
+    fitter = lambda inputs: kernel_type_func(inputs, w, Train_Point, b=b, gamma=gamma, **kw)
     return preprocess_for_fitter(fitter)
-
+def SVR_RBF_Fitter(w, b, Train_Point, gamma, trainable=False, collections=None):
+    return Kernel_Fitter(SVR_RBF, w, Train_Point, trainable=trainable, collections=collections, b=b, gamma=gamma)
+def SVR_Compactsupport_Fitter(w, b, Train_Point, gamma, trainable=False, collections=None):
+    return Kernel_Fitter(SVR_Compactsupport, w, Train_Point, trainable=trainable, collections=collections, b=b, gamma=gamma)
+#%%
+def KNN(inputs, w, Train_Point, approx_order=0, *args, **kw):
+    r = Train_Point.get_shape()[-1].value
+    w = (tf.reshape(w, [-1,]) if approx_order == 0 else tf.reshape(w, [-1, r+1]))
+    diff = Train_Point[:,tf.newaxis,:]-inputs[tf.newaxis,:,:]
+    distance = tf.reduce_sum(tf.square(diff), axis=2)
+    select = tf.reshape(tf.cast(tf.argmin(distance, axis=0), dtype=tf.int32), [-1,1])
+    if approx_order == 0:
+        return tf.gather_nd(w, select)
+    else:
+        w = tf.gather_nd(w, select)
+        NearestPoint = tf.gather_nd(Train_Point, select)
+        diff = NearestPoint-inputs
+        return w[:,0]+ tf.reduce_sum(w[:,1:]*diff, axis=1)
+def KNN_Fitter(w, Train_Point, approx_order=0, trainable=False, collections=None):
+    return Kernel_Fitter(KNN, w, Train_Point, trainable=trainable, collections=collections, approx_order=approx_order)
 #%%
 def batch_norm_wrapper(train_inputs, test_inputs=None, epsilon=1e-4, decay=0.95, collections=None):
     TENSOR_DTYPE = precision_control.TENSOR_PRECISION()

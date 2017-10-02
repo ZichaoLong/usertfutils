@@ -80,14 +80,31 @@ def tfloss_meta(loss):
     return tfloss_info
 #%%
 class objfunc_wrapper_class(object):
+    """
+    objfunc_wrapper_class
+    几个主要成员变量：
+    loss: tensorflow compute graph中目标函数loss function所代表的tensor
+    variables: 一个由tensorflow variables组成的list
+    variables_grads: 最顶层loss function对variables中各变量梯度的tensor
+    xopt_list: list，由objfunc_wrapper_class实例所持有的variables取值, 类比于sess.run(variables)
+    其他辅助成员变量:
+    allsize: variables中各变量size之和
+    variables_size,variables_shape: variables中各变量size及shape
+    array2tensors_placeholder, array2tensors_assignop: 用于更新variables
+    __init__:
+        输入: 
+        father_wrapper: 可以是一个objfunc_wrapper_class实例，也可由上述tfloss_meta生成
+            father_wrapper 必须有如下attributes:
+            'variables', 'variables_grads', 
+            'loss', 'xopt_list' 
+            'allsize', 'variables_size', 'variables_shape', 
+            'array2tensors_placeholder', 'array2tensors_assignop', 
+        registered_vars: list, father_wrapper.variables的子集, 
+            初始化即执行self.variables = registered_vars并将self的成员、成员函数更新
+        xopt_list: 可选，若xopt_list == None, 则self.xopt_list各元素
+            按registered_vars对应继承自father_wrapper.xopt_list
+    """
     def __init__(self, father_wrapper, registered_vars, xopt_list=None):
-        """
-        father_wrapper must has these attributes:
-        'allsize', 'variables', 'variables_grads', 
-        'variables_size', 'variables_shape', 
-        'array2tensors_placeholder', 'array2tensors_assignop', 
-        'loss', 'xopt_list' 
-        """
         assert isinstance(registered_vars, list)
         assert len(registered_vars) > 0
         registered_vars_indx = []
@@ -116,8 +133,9 @@ class objfunc_wrapper_class(object):
         self.variables_num = len(registered_vars)
     def update(self, feed_dict=None, sess=None):
         """
-        if feed_dict is provided, then update self.variables from feed_dict, 
-        else, from self.xopt_list
+        feed_dict是一个dict，feed_dict.keys()包含于self.variables, 
+        依据feed_dict更新self.variables中部分变量的值.
+        feed_dict缺省时，使用self.xopt_list更新self.variables
         """
         feed_dict = (dict(zip(self.variables, self.xopt_list)) if feed_dict is None else feed_dict)
         assignop_feed_dict = {}
@@ -132,9 +150,12 @@ class objfunc_wrapper_class(object):
         return None
     def set_xopt(self, xopt, iscopy=True):
         """
-        xopt: a ndarray with shape of [self.allsize,],
-        or a list of ndarrays as xopt_list,
-        or a dict of ndarrays with self.variables as dict keys
+        利用xopt更新self.xopt_list
+        其中:xopt可以是
+            a ndarray with shape of [self.allsize,],
+            or a list of ndarrays as xopt_list,
+            or a dict of ndarrays with self.variables as dict keys
+            若xopt是dict，xopt.keys()包含于(可以不相等)self.variables
         """
         if isinstance(xopt, list):
             self.xopt_list = []
@@ -153,6 +174,8 @@ class objfunc_wrapper_class(object):
         return array2list(xopt, self.variables_size, self.variables_shape, iscopy)
     def l2a(self, xopt_list):
         return list2array(xopt_list, self.variables_size, self.variables_shape)
+    def l2d(self, xopt_list):
+        return dict(zip(self.variables, xopt_list))
     def d2l(self, xopt_dict, iscopy=True):
         xopt_list = []
         for v in self.variables:
@@ -164,6 +187,10 @@ class objfunc_wrapper_class(object):
                 x = (self.xopt_list[i].copy() if iscopy else self.xopt_list[i])
                 xopt_list.append(x)
         return xopt_list
+    def a2d(self, xopt, iscopy=True):
+        return self.l2d(self.a2l(xopt, iscopy=iscopy))
+    def d2a(self, xopt_dict):
+        return self.l2a(self.d2l(xopt_dict, iscopy=False))
     def set_tfenv(self, x, feed_dict=None, sess=None, iscopy=False):
         sess = (tf.get_default_session() if sess is None else sess)
         feed_dict = {} if feed_dict is None else feed_dict
@@ -177,7 +204,7 @@ class objfunc_wrapper_class(object):
             feed_dict: extra feed_dict for forward propagation, e.g. batch_size of data
             sess: if sess is None, then tf.get_default_session() will be used
         Return:
-            objfunc value resp. trainable value x
+            objfunc value resp. x
         """
         feed, sess = self.set_tfenv(x, feed_dict, sess)
         return self.loss.eval(session=sess, feed_dict=feed)
