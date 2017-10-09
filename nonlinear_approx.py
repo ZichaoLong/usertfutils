@@ -11,88 +11,116 @@ __all__ = ['LagrangeInterp', 'LagrangeInterp_Fitter',
         'NN_Fitter', 'KNN_Fitter']
 
 #%%
-def preprocess_for_fitter(fitter,variables):
-    def F(inputs, **kw):
-        """
+class nonlinear_fitter:
+    def __init__(self, fitter, *, trainable_vars=None, method=None, doc=None, dim=None, extra_vars=None):
+        self.fitter = fitter
+        self.trainable_vars = trainable_vars
+        self.method = method
+        self.__doc = doc
+        self.dim = dim
+        self.extra_vars = ({} if extra_vars is None else extra_vars)
+    def __reps__(self):
+        print('dimension: ', self.dim)
+        print('approx method:', self.method)
+        print('trainable variables:')
+        print(self.trainable_vars)
+        print('extra variables:')
+        print(self.extra_vars)
+    def __str__(self):
+        self.__reps__()
+        print(self.__doc)
+    def __call__(self, inputs, **kw):
+        return self.fitter(inputs, **kw)
+
+def preprocess_for_fitter(fitter):
+    """
+    对 fitter 的包装, 作用是调整其 inputs,outputs 的 shape
+    Args: 
+        fitter, callable
+    Return: 
+        F, a decoration of fitter
+    About fitter:
+        Args: inputs, tensor, N x m
+        Return: outputs, tensor, N or N x k
+    About F:
         Args: inputs
-            inputs 是一个 N1 x N2 x ... Nt x m 的 tensor.
+            inputs 是一个 N1 x N2 x ... Nt x m 的 tensor, 其中 m,t>0, inputs 表示一系列 m 维点的坐标,
             其中 N1,N2,...,Nt 之一可以是 None(例如placeholder情形).
-        Returns: outputs
+        Return: outputs
             outputs 满足如下情形之一:
                 case1. outputs shape = N1 x N2 x ... x Nt
                 case2. outputs shape = N1 x N2 x ... x Nt x k & k>1
-                case3. outputs 是一个 list, outputs 中的每个元素属于 case1 or case2 之一
-        Note:
-            F 通过调用装饰函数 preprocess_for_fitter 的参数 fitter 实现,
-            fitter 相当于 F 只接收 N x m tensor的情形.
-            对上面的 case1, outputs = F(inputs1) 相当于 
-                >> inputs = tf.reshape(inputs1, [N1 x ... x Nt, m])
-                >> outputs = tf.reshape(fitter(inputs), [N1,...,Nt])
-            对于 case2,case3 做相同理解.
-        """
+    Note:
+        F 内部调用 fitter 并对 inputs, outputs reshape实现对fitter的包装.
+        对上面的 case1, outputs = F(inputs1) 相当于 
+            >> inputs = tf.reshape(inputs1, [N1 x ... x Nt, m])
+            >> outputs = tf.reshape(fitter(inputs), [N1,...,Nt])
+        对于 case2 做相同理解.
+    """
+    def F(inputs, **kw):
         tensor_shape = inputs.get_shape()
+        assert len(tensor_shape) > 1
         s = []
         for i in range(len(tensor_shape)):
             j = (-1 if tensor_shape[i].value is None else tensor_shape[i].value)
             s.append(j)
         if len(s) > 2:
             inputs = tf.reshape(inputs, [-1,s[-1]])
-        infe_tmp = fitter(inputs, **kw)
-        infe = []
-        if len(s) > 2:
-            if not isinstance(infe_tmp, list):
-                if len(infe_tmp.get_shape()) == 1:
-                    infe = tf.reshape(infe_tmp, s[:-1])
-                else:
-                    infe = tf.reshape(infe_tmp, [*s[:-1],infe_tmp.get_shape()[1].value])
-            else:
-                for i in range(len(infe_tmp)):
-                    if len(infe_tmp[i].get_shape()) == 1:
-                        infe.append(tf.reshape(infe_tmp[i], s[:-1]))
-                    else:
-                        infe = tf.reshape(infe_tmp, [*s[:-1],infe_tmp[i].get_shape()[1].value])
-        else:
-            infe = infe_tmp
-        return infe
-    F.__doc__ = F.__doc__ + 'docstring for fitter:\n' + fitter.__doc__
-    F.variables = variables
+        outputs_tmp = fitter(inputs, **kw)
+        if len(outputs_tmp.get_shape()) <= 1 or outputs_tmp.get_shape()[-1] == 1: # 前者默认输出维度为1
+            outputs = tf.reshape(outputs_tmp, s[:-1])
+        else: 
+            outputs = tf.reshape(outputs_tmp, [*s[:-1],outputs_tmp.get_shape()[-1].value])
+        return outputs
     return F
 
 #%%
-def LagrangeInterp(inputs, interp_coe, nonlinear_rank, interp_order, mesh_bound, mesh_size, mesh_delta):
-    ele2coe = zeros([interp_order+1,]*nonlinear_rank+[nonlinear_rank,], dtype=int32)
-    perm = arange(nonlinear_rank+1, dtype=int32)
-    perm[1:] = arange(nonlinear_rank, dtype=int32)
-    perm[0] = nonlinear_rank
+def LagrangeInterp(inputs, *, interp_coe, interp_dim, interp_order, mesh_bound, mesh_size, mesh_delta):
+    """
+    R^m中矩形网格Lagrange插值
+    Args: 
+        inputs: tensor, shape = [N,m], 其中N可以是None
+        interp_dim: m 就是 interp_dim
+        interp_coe: tensor, shape = mesh_size*interp_order+1
+        interp_order: Lagrange插值次数
+        mesh_bound: ndarray, R^m中各维度bound, shape = [2,m]
+        mesh_size: ndarray, R^m中各坐标方向网格数, shape = [m,]
+        mesh_delta: ndarray, R^m中各坐标方向网格尺度, shape = [m,], 可由mesh_bound,mesh_size推断出
+    Return:
+        outputs: tensor, shape = [N,], 根据interp_coe对inputs各点的插值结果
+    """
+    ele2coe = zeros([interp_order+1,]*interp_dim+[interp_dim,], dtype=int32) # 构造ele2coe: ele2coe[a_1,a_2,...,a_m] = array([a_1,a_2,...,a_m])
+    perm = arange(interp_dim+1, dtype=int32)
+    perm[1:] = arange(interp_dim, dtype=int32)
+    perm[0] = interp_dim
     ele2coe = transpose(ele2coe, axes=perm)
-    for i in range(nonlinear_rank):
-        perm = arange(nonlinear_rank+1, dtype=int32)
+    for i in range(interp_dim):
+        perm = arange(interp_dim+1, dtype=int32)
         perm[1] = i+1
         perm[i+1] = 1
         ele2coe = transpose(ele2coe, axes=perm)
         for j in range(interp_order+1):
             ele2coe[i,j] = j
         ele2coe = transpose(ele2coe, axes=perm)
-    perm = arange(nonlinear_rank+1, dtype=int32)
-    perm[:nonlinear_rank] = arange(1, nonlinear_rank+1, dtype=int32)
-    perm[nonlinear_rank] = 0
+    perm = arange(interp_dim+1, dtype=int32)
+    perm[:interp_dim] = arange(1, interp_dim+1, dtype=int32)
+    perm[interp_dim] = 0
     ele2coe = transpose(ele2coe, axes=perm)
     #%%
     sample_point_shift = (inputs-mesh_bound[newaxis,0,:])/mesh_delta[newaxis]
-    element_indices = tf.floor(sample_point_shift)
-    # shift element_indices to valid indices, i.e. 0:mesh_size resp.
-    element_indices = tf.nn.relu(element_indices)
+    element_indices = tf.floor(sample_point_shift) # inputs各点所在单元, element_indices.shape = [N,m], i.e. inputs.shape
+    element_indices = tf.nn.relu(element_indices) # 考虑到inputs可能超出mesh_bound, 需要把element_indices移至正常位置
     element_indices = mesh_size[newaxis,:]-1-tf.nn.relu(mesh_size[newaxis,:]-1-element_indices)
     # 
     sample_point_shift = sample_point_shift-element_indices
     ##
     ##
     element_indices = tf.cast(element_indices, dtype=tf.int32)
-    interp_coe_indices = tf.reshape(element_indices*interp_order, [-1,]+[1,]*nonlinear_rank+[nonlinear_rank,])+ele2coe[newaxis]
-    interp_coe_resp = tf.gather_nd(interp_coe, interp_coe_indices)
+    interp_coe_indices = tf.reshape(element_indices*interp_order, [-1,]+[1,]*interp_dim+[interp_dim,])+ele2coe[newaxis]
+    interp_coe_resp = tf.gather_nd(interp_coe, interp_coe_indices) # interp_coe_resp[n,a_1,a_2,...,a_m]表示inputs第n(0<=n<=N)个点坐在单元第[a_1,...,a_m]个系数, 0<=a_i<=interp_order, 每个点对应(interp_order+1)^m个系数.
     #%%
-    base_function = ndarray(shape=[nonlinear_rank, interp_order+1], dtype=np.object)
-    for i in range(nonlinear_rank):
+    base_function = ndarray(shape=[interp_dim, interp_order+1], dtype=np.object)
+    for i in range(interp_dim):
         M = sample_point_shift[:,i,tf.newaxis]-(arange(interp_order+1)/interp_order)[newaxis,:]
         for j in range(interp_order+1):
             base_function[i,j] = (
@@ -101,7 +129,7 @@ def LagrangeInterp(inputs, interp_coe, nonlinear_rank, interp_order, mesh_bound,
                   )
     TENSOR_DTYPE = precision_control.TENSOR_PRECISION()
     base = tf.constant(1, dtype=TENSOR_DTYPE)
-    for i in range(nonlinear_rank):
+    for i in range(interp_dim):
         base_tmp0 = [0,]*(interp_order+1)
         for j in range(interp_order+1):
             base_tmp0[j] = base_function[i,j][:,tf.newaxis]
@@ -110,57 +138,47 @@ def LagrangeInterp(inputs, interp_coe, nonlinear_rank, interp_order, mesh_bound,
             base = base_tmp1
         else:
             base = base[:,tf.newaxis]*base_tmp1
-    perm = arange(nonlinear_rank+1, dtype=int32)
-    perm[1:] = arange(1,nonlinear_rank+1)[::-1]
+    perm = arange(interp_dim+1, dtype=int32)
+    perm[1:] = arange(1,interp_dim+1)[::-1]
     base = tf.transpose(base, perm=perm)
-    inference = tf.reduce_sum(interp_coe_resp*base, axis=list(range(1,nonlinear_rank+1)))
-    return inference
-    ##base_tmp = base_function[nonlinear_rank-1]
-    ##for i in range(nonlinear_rank-2,-1,-1):
-    ##    base_tmp1 = [0,]*(interp_order+1)
-    ##    base_tmp2 = [0,]*(interp_order+1)
-    ##    perm = arange(nonlinear_rank-i, dtype=int32)
-    ##    perm[0] = 1
-    ##    perm[1] = 0
-    ##    #perm[0:-1] = arange(nonlinear_rank-i-1, dtype=int32)+1
-    ##    #perm[-1] = 0
-    ##    for j in range(interp_order+1):
-    ##        base_tmp1[j] = tf.reshape(base_function[i,j], [-1,]+[1,]*(nonlinear_rank-i-2))*base_tmp
-    ##        base_tmp2[j] = tf.transpose(base_tmp1[j], perm=perm)
-    ##    base_tmp = base_tmp2
-    ##for i in range(interp_order+1):
-    ##    base_tmp[i] = base_tmp[i][:,tf.newaxis]
-    ##base = tf.concat(base_tmp, axis=1)
-    ##inference = tf.reduce_sum(interp_coe_resp*base, axis=list(range(1,nonlinear_rank+1)))
-    ##return inference
-def LagrangeInterp_Fitter(interp_coe, interp_order, mesh_bound, mesh_size, collections=None):
+    outputs = tf.reduce_sum(interp_coe_resp*base, axis=list(range(1,interp_dim+1)))
+    return outputs
+def LagrangeInterp_Fitter(*, interp_order, mesh_bound, interp_coe=None, mesh_size=None, collections=None):
     """
-    Lagrange interpolation in R^m
-    Args: 
-        interp_coe: ndarray or tensor, interp_coe.shape = [N1, N2, ... , Nt, (m^interp_order)]
-        interp_order: Lagrange interpolation order, a natural number
-        mesh_bound: ndarray, mesh_bound.shape = [2,m]
-        mesh_size: ndarray, mesh_size.shape = [m,]
-        mesh_delta: ndarray, mesh_delta.shape = [m,]
+    基于interp_coe等输入参数构建R^m中矩形网格上Lagrange插值拟合器.
+    此拟合器接收形如N1xN2x...xNtxm的inputs, 其中N1,N2,...,Nt可以有至多一个是None, t可取任意正整数.
+    Args:
+        interp_order: Lagrange插值次数
+        mesh_bound: ndarray, R^m中各坐标方向的bound, shape = [2,m]
+        interp_coe: ndarray or tensor, shape = mesh_size*interp_order+1, 当interp_coe为ndarray时,以此为初值构建一个tf.Variable作为插值系数. 若输入 interp_coe 为 None, 则由 mesh_size,interp_order 新建interp_coe.
+        mesh_size: ndarray, R^m中各坐标方向网格数, shape = [m,]. 若输入 interp_coe 不为 None, 可由 interp_coe 推断出 mesh_size.
+        collections: 内部生成interp_coe时额外加入的collections
     Return:
-        A LagrangeInterp fitter
+        a Lagrange interpolation fitter F,
+            outputs = F(inputs), inputs.shape=[N1,N2,...,Nt,m], outputs.shape=[N1,...,Nt]
     """
     mesh_bound = array(mesh_bound)
-    mesh_size = array(mesh_size)
-    mesh_delta = (mesh_bound[1]-mesh_bound[0])/mesh_size
+    interp_dim = mesh_bound.shape[1]
+    if mesh_size is None:
+        assert (not interp_coe is None)
+    if interp_coe is None:
+        interp_coe = random.randn(*list(array(mesh_size, dtype=int32)*interp_order+1))
     TENSOR_DTYPE = precision_control.TENSOR_PRECISION()
-    nonlinear_rank = mesh_size.shape[0]
     if isinstance(interp_coe, ndarray):
         interp_coe = tf.Variable(interp_coe, dtype=TENSOR_DTYPE, name='interp_coe', collections=collections)
-    fitter = lambda inputs: LagrangeInterp(inputs, interp_coe, nonlinear_rank, interp_order, mesh_bound, mesh_size, mesh_delta)
-    fitter.__doc__ = 'Lagrange Interpolation'
-    return preprocess_for_fitter(fitter, interp_coe)
+    mesh_size = []
+    for i in range(interp_dim):
+        mesh_size.append((interp_coe.get_shape()[i].value-1)//interp_order)
+    mesh_size = array(mesh_size)
+    mesh_delta = (mesh_bound[1]-mesh_bound[0])/mesh_size
+    fitter = lambda inputs: LagrangeInterp(inputs, interp_coe=interp_coe, interp_dim=interp_dim, interp_order=interp_order, mesh_bound=mesh_bound, mesh_size=mesh_size, mesh_delta=mesh_delta)
+    extra_vars = {'interp_order': interp_order, 'mesh_bound': mesh_bound, 
+            'mesh_size': mesh_size, 'mesh_delta': mesh_delta}
+    return nonlinear_fitter(preprocess_for_fitter(fitter), trainable_vars=interp_coe, method='Lagrange Interpolation', doc=LagrangeInterp_Fitter.__doc__, dim=interp_dim, extra_vars=extra_vars)
 
 #%%
-def Kernel_Fitter(kernel_type_func, w, Train_Point, trainable=False, collections=None, **kw):
+def Kernel_Fitter(kernel_type_func, w, Train_Point, **kw):
     TENSOR_DTYPE = precision_control.TENSOR_PRECISION()
-    if isinstance(Train_Point, ndarray):
-        Train_Point = tf.Variable(Train_Point, dtype=TENSOR_DTYPE, trainable=trainable, collections=collections)
     s0 = w.get_shape()
     s1 = Train_Point.get_shape()
     assert len(s0) == len(s1)
@@ -169,40 +187,47 @@ def Kernel_Fitter(kernel_type_func, w, Train_Point, trainable=False, collections
         assert s0[i].value == s1[i].value
     Train_Point = tf.reshape(Train_Point, [-1, s1[-1].value])
     w = tf.reshape(w, [-1, s0[-1].value])
-    fitter = lambda inputs: kernel_type_func(inputs, w, Train_Point, **kw)
-    fitter.__doc__ = kernel_type_func.__doc__
-    variables = kw
-    variables['w'] = w
-    variables['Train_Point'] = Train_Point
-    return preprocess_for_fitter(fitter, variables)
-def SVR_RBF(inputs, w, Train_Point, *, b=0, gamma=1, **kw):
+    fitter = lambda inputs: kernel_type_func(inputs, w=w, Train_Point=Train_Point, **kw)
+    return preprocess_for_fitter(fitter)
+def SVR_RBF(inputs, w, Train_Point, *, b=0, gamma=1):
     """
-    SVR approximation via RBF kernel
+    RBF kernel SVR
     """
     logK = tf.reduce_sum(tf.square(Train_Point[:,tf.newaxis,:]-inputs[tf.newaxis,:,:]), axis=2)
     K = tf.exp(-gamma*logK)
     w = tf.reshape(w, [1,-1])
-    inference = (w @ K + b)[0,:]
-    return inference
-def SVR_RBF_Fitter(w, Train_Point, b, gamma, trainable=False, collections=None):
+    outputs = (w @ K + b)[0,:]
+    return outputs
+def SVR_RBF_Fitter(w, Train_Point, *, b, gamma, trainable=False, collections=None):
     """
     Args:
         w: tensor, N1 x N2 x ... x Nt x 1
         Train_Point: tensor or ndarray, N1 x N2 x ... x Nt x m
     Return:
-        A SVR fitter via RBF kernel
+        A RBF kernel SVR fitter
     """
     TENSOR_DTYPE =  precision_control.TENSOR_PRECISION()
     b = (tf.reshape(b, []) if not isinstance(b, ndarray) else tf.Variable(b, dtype=TENSOR_DTYPE, collections=collections))
-    return Kernel_Fitter(SVR_RBF, w, Train_Point, trainable=trainable, collections=collections, b=b, gamma=gamma)
-SVR_Compactsupport = SVR_RBF
-SVR_Compactsupport_Fitter = SVR_RBF_Fitter
+    if isinstance(Train_Point, ndarray):
+        Train_Point = tf.Variable(Train_Point, dtype=TENSOR_DTYPE, trainable=trainable, collections=collections)
+    fitter = Kernel_Fitter(SVR_RBF, w=w, Train_Point=Train_Point, b=b, gamma=gamma)
+    extra_vars = {'Train_Point': Train_Point, 'gamma': gamma}
+    trainable_vars = {'w':w, 'b':b}
+    all_trainable_vars = tf.trainable_variables()
+    if Train_Point in all_trainable_vars:
+        trainable_vars['Train_Point'] = Train_Point
+    if gamma in all_trainable_vars:
+        trainable_vars['gamma'] = gamma
+    dim = Train_Point.get_shape()[-1].value
+    return nonlinear_fitter(fitter, trainable_vars=trainable_vars, method='RBF kernel SVR', doc=SVR_RBF_Fitter.__doc__, dim=dim, extra_vars=extra_vars)
+#%% TODO
+# SVR_Compactsupport
+# SVR_Compactsupport_Fitter
 #%%
-def KNN(inputs, w, Train_Point, approx_order=0, *args, **kw):
+def KNN(inputs, w, Train_Point, *, approx_order=0):
     """
-    1-nearest neiborhood approximation 
+    1-nearest neiborhood regression 
     """
-    r = Train_Point.get_shape()[-1].value
     diff = Train_Point[:,tf.newaxis,:]-inputs[tf.newaxis,:,:]
     distance = tf.reduce_sum(tf.square(diff), axis=2)
     select = tf.reshape(tf.cast(tf.argmin(distance, axis=0), dtype=tf.int32), [-1,1])
@@ -213,18 +238,28 @@ def KNN(inputs, w, Train_Point, approx_order=0, *args, **kw):
         NearestPoint = tf.gather_nd(Train_Point, select)
         diff = NearestPoint-inputs
         return w[:,0]+ tf.reduce_sum(w[:,1:]*diff, axis=1)
-def KNN_Fitter(w, Train_Point, approx_order=0, trainable=False, collections=None):
+def KNN_Fitter(w, Train_Point, *, approx_order=0, trainable=False, collections=None):
     """
     Return an 1-nearest neiborhood fitter in R^m
     Args:
         w: tensor, N1 x N2 x ... x Nt x (1+approx_order*m)
         Train_Point: tensor or ndarray, N1 x N2 x ... x Nt x m
+        approx_order: 0 or 1, 1-nearest neiborhood 局部常数回归或局部线性回归
     Return:
         an 1-nearest neiborhood fitter
     """
-    return Kernel_Fitter(KNN, w, Train_Point, trainable=trainable, collections=collections, approx_order=approx_order)
+    TENSOR_DTYPE =  precision_control.TENSOR_PRECISION()
+    if isinstance(Train_Point, ndarray):
+        Train_Point = tf.Variable(Train_Point, dtype=TENSOR_DTYPE, trainable=trainable, collections=collections)
+    fitter = Kernel_Fitter(KNN, w, Train_Point, approx_order=approx_order)
+    extra_vars = {'Train_Point': Train_Point, 'approx_order': approx_order}
+    trainable_vars = {'w':w}
+    if Train_Point in tf.trainable_variables():
+        trainable_vars['Train_Point'] = Train_Point
+    dim = Train_Point.get_shape()[-1].value
+    return nonlinear_fitter(fitter, trainable_vars=trainable_vars, method='1-nearest neiborhood regression', doc=KNN_Fitter.__doc__, dim=dim, extra_vars=extra_vars)
 #%%
-def batch_norm_wrapper(nonlinear_rank, collections=None):
+def batch_norm_wrapper(nonlinear_rank, collections=None): # will be removed from nonlinear_approx.py
     TENSOR_DTYPE = precision_control.TENSOR_PRECISION()
     scale = tf.Variable(tf.ones([nonlinear_rank], dtype=TENSOR_DTYPE), 
             name='BN_scale', trainable=False, dtype=TENSOR_DTYPE, collections=collections)
@@ -250,73 +285,43 @@ def batch_norm_wrapper(nonlinear_rank, collections=None):
             pop_mean, pop_var, beta, scale, epsilon)
         return train_outputs, test_outputs
     return batch_norm
-def NN_Fitter(nonlinear_rank, widths, activation_func=tf.nn.relu, with_bn=True, collections=None, 
-        providebn=None, isoutputbn=False):
+def NN_Fitter(dim, widths, *, activation_func=tf.nn.relu, output_dim=None, collections=None):
     """
-    Return an full connected neural network fitter in R^nonlinear_rank
+    Return an full connected neural network fitter in R^dim
     Args:
-        nonlinear_rank: R^nonlinear_rank
-        widths: 一个list, widths[:-1]是各隐层宽度,widths[-1]是输出层输出数
+        dim, widths(a list), output_dim 是输入层、中间各隐层、输出层宽度. 当output_dim为None时, widths[-1]作为输出层宽度.
     Return:
         a NN fitter
     """
     TENSOR_DTYPE = precision_control.TENSOR_PRECISION()
-    widths = [nonlinear_rank,]+widths
+    widths = [dim,]+widths+([] if output_dim is None else [output_dim,])
     w = []
     b = []
-    isprovidebn = (False if providebn is None else True)
-    bn = ([] if providebn is None else providebn)
-    if with_bn and not isprovidebn:
-        bn_wrapper = batch_norm_wrapper(widths[i], collections=collections)
-        bn.append(bn_wrapper)
     for i in range(len(widths)-1):
-        w_init = tf.truncated_normal(shape=widths[i:i+2], mean=0, stddev=1/widths[i], dtype=TENSOR_DTYPE)
+        w_init = tf.truncated_normal(shape=widths[i:i+2], mean=0, stddev=1/sqrt(widths[i]), dtype=TENSOR_DTYPE)
         w.append(
                 tf.Variable(w_init, dtype=TENSOR_DTYPE, collections=collections)
                 )
-        if not with_bn:
-            b_init = tf.random_uniform(shape=[1,widths[i+1]], dtype=TENSOR_DTYPE)/widths[i+1]
-            b.append(
-                    tf.Variable(b_init, dtype=TENSOR_DTYPE, collections=collections)
-                    )
-        elif not isprovidebn:
-            bn_wrapper = batch_norm_wrapper(widths[i+1], collections=collections)
-            bn.append(bn_wrapper)
-    scale = tf.Variable(random.rand(1,widths[-1]), name='scale', dtype=TENSOR_DTYPE, collections=collections)
+        b_init = tf.random_uniform(shape=[1,widths[i+1]], dtype=TENSOR_DTYPE)
+        b.append(
+                tf.Variable(b_init, dtype=TENSOR_DTYPE, collections=collections)
+                )
+    scale = tf.Variable(ones([1,widths[-1]]), name='scale', dtype=TENSOR_DTYPE, collections=collections)
     bias = tf.Variable(random.rand(1,widths[-1]), name='bias', dtype=TENSOR_DTYPE, collections=collections)
-    variables = {}
-    variables['w'] = w
-    variables['scale'] = scale
-    variables['bias'] = bias
-    if not with_bn:
-        variables['b'] = b
-    def fitter(inputs, epsilon=1e-4, decay=0.95):
+    def fitter_(inputs):
         """
         a NN fitter
         """
-        if with_bn:
-            train_outputs,test_outputs = bn[0](inputs)
-        else:
-            outputs = inputs
+        outputs = inputs
         for i in range(len(widths)-1):
-            if with_bn:
-                train_outputs, test_outputs = bn[i+1](train_outputs @ w[i], test_outputs @ w[i], collections=collections)
-                train_outputs = activation_func(train_outputs)
-                test_outputs = activation_func(test_outputs)
-            else:
-                outputs = activation_func(outputs @ w[i] + b[i])
+            outputs = activation_func(outputs @ w[i] + b[i])
         output_shape = [-1,widths[-1]] if widths[-1]>1 else [-1,]
-        if with_bn:
-            train_infe = tf.reshape(scale*train_outputs+bias, output_shape)
-            test_infe = tf.reshape(scale*test_outputs+bias, output_shape)
-            return [train_infe, test_infe]
-        else:
-            infe = tf.reshape(scale*outputs+bias, output_shape)
-            return infe 
-        if isoutputbn:
-            return preprocess_for_fitter(fitter, variables), bn
-        else:
-            return preprocess_for_fitter(fitter, variables)
+        outputs = tf.reshape(scale*outputs+bias, output_shape)
+        return outputs 
+    fitter = preprocess_for_fitter(fitter_)
+    trainable_vars = {'w':w, 'b':b, 'scale':scale, 'bias':bias}
+    extra_vars = None
+    return nonlinear_fitter(fitter, trainable_vars=trainable_vars, method='NN', doc=NN_Fitter.__doc__, dim=dim, extra_vars=None)
 
 #%%
 

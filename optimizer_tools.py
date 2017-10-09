@@ -243,13 +243,22 @@ def objfunc_wrapper(father_wrapper, registered_vars=None, xopt_list=None):
         registered_vars = father_wrapper.variables
     return objfunc_wrapper_class(father_wrapper, registered_vars, xopt_list)
 objfunc_wrapper.__doc__ = objfunc_wrapper_class.__doc__
+
 #%% constraint utils
 def constraint_check(x, obj ,constraint, checktype='xopt', iscopy=True):
     x_dict = obj.a2d(x, iscopy=iscopy)
     for v in constraint.keys():
-        if v in x_dict:
-            m = constraint[v]
+        if not v in x_dict:
+            continue
+        m = constraint[v]
+        if x_dict[v].shape != ():
             x_dict[v][~isnan(m)] = (m[~isnan(m)] if checktype == 'xopt' else 0)
+            continue
+        if isnan(m):
+            continue
+        x_dict_v_tmp = reshape(x_dict[v], [1,]) 
+        assert shares_memory(x_dict[v], x_dict_v_tmp)
+        x_dict_v_tmp[0] = (m if checktype == 'xopt' else 0)
     if iscopy:
         return obj.d2a(x_dict)
     else:
@@ -261,55 +270,10 @@ def constraint_objfunc(obj, constraint):
         return obj.f(xopt_check(x, obj, constraint, iscopy=True), **kw)
     def G(x, **kw):
         return grad_check(obj.g(xopt_check(x, obj, constraint, iscopy=True), **kw), obj, constraint, iscopy=False)
-    return F, G
+    def proj(x, **kw):
+        return xopt_check(x, obj, constraint, iscopy=True)
+    return F, G, proj
 #%%
-def test():
-    """
-    use tfloss_meta to solve the ls_l2 and ls_l1 system, with lbfgs optimizer: 
-        min_{a,b} ||X@a+b-y||_2^2  ---(1)
-    and
-        min_{a,b} ||X@a+b-y||_1    ---(2)
-    where a_opt = arange(10), b_opt = 1, 
-    X = random.randn(100,10), y = X@a+b+random.randn(100,1)*0.3
-    """
-    print(test.__doc__)
-    a_true = reshape(arange(10), [10,1])
-    b_true = 1
-    with tf.name_scope('optimizer_tools'):
-        x = tf.Variable(zeros((100,10)), dtype=tf.float64, trainable=False)
-        y = tf.Variable(zeros((100,1)), dtype=tf.float64, trainable=False)
-        a = tf.Variable(random.randn(10,1), tf.float64)
-        b = tf.Variable([1,], dtype=tf.float64)
-        loss2 = tf.reduce_mean((x@a+b-y)**2)
-        loss1 = tf.reduce_sum(tf.abs(x@a+b-y))
-        sess = tf.Session()
-        sess.run([a.initializer, b.initializer])
-        loss1wrapper = objfunc_wrapper(loss1)
-        loss2wrapper = objfunc_wrapper(loss2)
-        loss3wrapper = objfunc_wrapper(loss1wrapper, [a,])
-    from scipy.optimize import fmin_l_bfgs_b as lbfgs
-    data = random.randn(100,10)
-    with sess.as_default():
-        xopt, fopt, dict_opt = lbfgs(loss1wrapper.f, zeros(11), fprime=loss1wrapper.g, args=({x: data, y: data@a_true+b_true+random.randn(100,1)*0.3},))
-        loss1wrapper.set_xopt(xopt)
-        loss1wrapper.update()
-        print('l1 opt: ')
-        print('a: ', reshape(a.eval(), [10,]))
-        print('b: ', b.eval())
-        xopt, fopt, dict_opt = lbfgs(loss2wrapper.f, zeros(11), fprime=loss2wrapper.g, args=({x: data, y: data@a_true+b_true+random.randn(100,1)*0.3},))
-        loss2wrapper.set_xopt(xopt)
-        loss2wrapper.update()
-        set_printoptions(suppress=True, precision=2)
-        print('l2 opt: ')
-        print('a: ', reshape(a.eval(), [10,]))
-        print('b: ', b.eval())
-        xopt, fopt, dict_opt = lbfgs(loss3wrapper.f, zeros(10), fprime=loss3wrapper.g, args=({x: data, y: data@a_true+b_true+random.randn(100,1)*0.3},))
-        loss3wrapper.set_xopt(xopt)
-        loss3wrapper.update()
-        set_printoptions(suppress=True, precision=2)
-        print('l3 opt: ')
-        print('a: ', reshape(a.eval(), [10,]))
-    return None
 #%%
 
 #%%
