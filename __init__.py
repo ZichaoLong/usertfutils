@@ -18,6 +18,8 @@ from .kernel_basis_filter_tensor import *
 from . import nonlinear_approx
 __all__.extend(nonlinear_approx.__all__)
 from .nonlinear_approx import *
+from . import pdetools2d
+__all__.append('pdetools2d')
 #%%
 
 
