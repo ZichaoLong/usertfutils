@@ -107,6 +107,8 @@ def LagrangeInterp(inputs, *, interp_coe, interp_dim, interp_order, mesh_bound, 
     perm[interp_dim] = 0
     ele2coe = transpose(ele2coe, axes=perm)
     #%%
+    inputs = tf.maximum(inputs, mesh_bound[newaxis,0,:])
+    inputs = tf.minimum(inputs, mesh_bound[newaxis,1,:])
     sample_point_shift = (inputs-mesh_bound[newaxis,0,:])/mesh_delta[newaxis]
     element_indices = tf.floor(sample_point_shift) # inputs各点所在单元, element_indices.shape = [N,m], i.e. inputs.shape
     element_indices = tf.nn.relu(element_indices) # 考虑到inputs可能超出mesh_bound, 需要把element_indices移至正常位置

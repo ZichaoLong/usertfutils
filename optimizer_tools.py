@@ -270,9 +270,11 @@ def constraint_objfunc(obj, constraint):
         return obj.f(xopt_check(x, obj, constraint, iscopy=True), **kw)
     def G(x, **kw):
         return grad_check(obj.g(xopt_check(x, obj, constraint, iscopy=True), **kw), obj, constraint, iscopy=False)
-    def proj(x, **kw):
+    def xopt_proj(x, **kw):
         return xopt_check(x, obj, constraint, iscopy=True)
-    return F, G, proj
+    def grad_proj(x, **kw):
+        return grad_check(x, obj, constraint, iscopy=True)
+    return F, G, xopt_proj, grad_proj
 #%%
 #%%
 

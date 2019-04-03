@@ -14,9 +14,12 @@ def py_func(func, inp, name=None, grad=None): # make out what this function do, 
     with g.gradient_override_map({"PyFunc": rnd_name}):
         return tf.py_func(func, inp, precision_control.TENSOR_PRECISION(), stateful=True, name=name)
 #%% pad
-def user_pad(tensor, paddings, mode='CONSTANT', name=None):
+def user_pad(tensor, paddings, mode='CONSTANT', name=None, constant_value=0):
     if mode in ['CONSTANT', 'SYMMETRIC', 'REFLECT']:
-        return tf.pad(tensor, paddings=paddings, mode=mode, name=name)
+        if constant_value == 0 and mode == 'CONSTANT':
+            return tf.add(tf.pad(tensor-constant_value, paddings=paddings, mode=mode),constant_value,name=name)
+        else:
+            return tf.pad(tensor, paddings=paddings, mode=mode, name=name)
     else:
         assert mode == 'WRAP'
         i = 0
@@ -94,7 +97,7 @@ def custom_corr2d_valid_grad(op, grad):
                     ), [1,2,0,3]
                 )
             ]
-def tfconv2d(x, f, name=None, boundary=None, userdef_tfconv2d=None, **kw):
+def tfconv2d(x, f, name=None, boundary=None, userdef_tfconv2d=None, constant_value=0):
     """
     if boundary is None, then no padding for conv2d, 
     else boudary \in {['symmetric', 'constant', 'reflect', 'wrap'] and their upper}
@@ -107,26 +110,34 @@ def tfconv2d(x, f, name=None, boundary=None, userdef_tfconv2d=None, **kw):
     """
     assert x.shape[1].value >= f.shape[1].value
     assert x.shape[2].value >= f.shape[2].value
+    if userdef_tfconv2d is None:
+        userdef_tfconv2d = (True if precision_control.TENSOR_PRECISION() is tf.float64 else False)
+    if (boundary in ['constant', 'CONSTANT']) and (constant_value == 0): # 此情形直接调用卷积op,避免先pad再卷积的多余操作
+        if not userdef_tfconv2d:
+            return tf.nn.conv2d(x, f, name=name, strides=[1,1,1,1], padding='SAME')
+        else:
+            return tf.identity(tf.nn.conv3d(x[:,:,:,tf.newaxis,:],f[:,:,tf.newaxis,:,:], strides=[1,1,1,1,1],padding='SAME')[:,:,:,0,:], name=name)
     if not boundary is None:
         pad_top = (f.shape[0].value-1)//2
         pad_bottom = f.shape[0].value-1-pad_top
         pad_left = (f.shape[1].value-1)//2
         pad_right = f.shape[1].value-1-pad_left
-        x = user_pad(x, paddings=[[0,0], [pad_top,pad_bottom], [pad_left,pad_right], [0,0]], mode=boundary.upper())
+        x = user_pad(x, paddings=[[0,0], [pad_top,pad_bottom], [pad_left,pad_right], [0,0]], mode=boundary.upper(), constant_value=constant_value)
     shape = [1,]*4
     shape[0] = (-1 if x.shape[0].value is None else x.shape[0].value)
     shape[1] = x.shape[1].value-f.shape[0].value+1
     shape[2] = x.shape[2].value-f.shape[1].value+1
     shape[3] = f.shape[3].value
-    if userdef_tfconv2d is None:
-        userdef_tfconv2d = (True if precision_control.TENSOR_PRECISION() is tf.float64 else False)
     return (
-            tf.reshape(
-                py_func(user_ndarray_corr2d_valid, inp=[x,f], name='conv2d_py_func', grad=custom_corr2d_valid_grad),
-                shape=shape,
+            tf.identity(
+                tf.nn.conv3d(x[:,:,:,tf.newaxis,:],f[:,:,tf.newaxis,:,:], strides=[1,1,1,1,1],padding='VALID')[:,:,:,0,:],
                 name=name)
+            # tf.reshape(
+            #     py_func(user_ndarray_corr2d_valid, inp=[x,f], name='conv2d_py_func', grad=custom_corr2d_valid_grad),
+            #     shape=shape,
+            #     name=name)
             if userdef_tfconv2d
-            else tf.nn.conv2d(x, f, name=name, strides=[1,1,1,1], padding='VALID', **kw)
+            else tf.nn.conv2d(x, f, name=name, strides=[1,1,1,1], padding='VALID')
             )
 
 #%%
